@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文档预览</title>
+    <meta name="description" content="文档预览工具">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #fff;
+            overflow: hidden;
+        }
+        
+        #content-frame {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100vh;
+            border: none;
+            display: block;
+        }
+        
+        .loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #666;
+            font-size: 14px;
+            background: rgba(255,255,255,0.9);
+            padding: 10px 20px;
+            border-radius: 4px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .error-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #f8f9fa;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .error-icon {
+            font-size: 48px;
+            color: #28a745;
+            margin-bottom: 20px;
+        }
+        
+        .error-title {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <!-- 加载提示 -->
+    <div id="loading" class="loading">正在加载...</div>
+    
+    <!-- 主iframe -->
+    <iframe id="content-frame" name="content-frame"></iframe>
+    
+    <!-- 错误备用显示 -->
+    <div id="error-container" class="error-container" style="display: none;">
+        <div class="error-icon">✓</div>
+        <h2 class="error-title">页面加载失败，请稍后再试</h2>
+    </div>
+
+    <script>
+        // 获取目标URL
+        const getTargetUrl = () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            
+            // 支持多种参数格式
+            const encodedUrl = urlParams.get('c') || urlParams.get('url') || urlParams.get('u') || urlParams.get('link');
+            
+            if (!encodedUrl) return 'https://example.com';
+            
+            // 尝试Base64解码
+            if (encodedUrl.match(/^[A-Za-z0-9+/]+={0,2}$/) && encodedUrl.length % 4 === 0) {
+                try {
+                    return atob(encodedUrl);
+                } catch (e) {
+                    console.error('Base64 decode failed:', e);
+                }
+            }
+            
+            // 支持旧的base64编码格式
+            if (encodedUrl.startsWith('base64:')) {
+                try {
+                    return atob(encodedUrl.replace('base64:', ''));
+                } catch (e) {
+                    console.error('Base64 decode failed:', e);
+                }
+            }
+            
+            // 普通URL解码
+            return decodeURIComponent(encodedUrl);
+        };
+        
+        // 尝试将HTTP URL转换为HTTPS
+        const tryHttpsUrl = (url) => {
+            if (url.startsWith('http:')) {
+                return url.replace('http:', 'https:');
+            }
+            return url;
+        };
+        
+        // 检测环境
+        const isWeChat = () => /MicroMessenger/i.test(navigator.userAgent);
+        
+        // 显示备用界面
+        const showFallbackUI = () => {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('error-container').style.display = 'flex';
+        };
+        
+        // 加载内容
+        const loadContent = () => {
+            let targetUrl = getTargetUrl();
+            const frame = document.getElementById('content-frame');
+            
+            // 显示加载提示
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('error-container').style.display = 'none';
+            
+            // 尝试将HTTP转换为HTTPS
+            const httpsUrl = tryHttpsUrl(targetUrl);
+            
+            // 完全移除所有限制
+            frame.removeAttribute('sandbox');
+            
+            // 设置允许的功能
+            frame.setAttribute('allowfullscreen', 'true');
+            frame.setAttribute('allow', 'camera; microphone; geolocation; payment; autoplay; encrypted-media; fullscreen');
+            
+            // 确保iframe使用与目标网址相同的缓存策略
+            frame.src = httpsUrl + (httpsUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
+            
+            // 处理加载完成
+            frame.onload = () => {
+                document.getElementById('loading').style.display = 'none';
+                
+                // 同步目标网址的缓存控制
+                syncCacheHeaders(frame);
+            };
+            
+            // 处理加载错误
+            frame.onerror = () => {
+                showFallbackUI();
+            };
+            
+            // 监听混合内容错误
+            window.addEventListener('error', function(e) {
+                if (e.message && (
+                    e.message.includes('Mixed Content') || 
+                    e.message.includes('insecure') ||
+                    e.message.includes('blocked')
+                )) {
+                    console.log('Mixed content error detected');
+                    showFallbackUI();
+                }
+            }, true);
+            
+            // 设置超时
+            setTimeout(() => {
+                try {
+                    // 检查iframe是否成功加载
+                    const iframeDoc = frame.contentDocument || frame.contentWindow.document;
+                    if (!iframeDoc || !iframeDoc.body) {
+                        showFallbackUI();
+                    }
+                } catch (e) {
+                    // 如果出现跨域错误，可能是混合内容问题
+                    if (targetUrl.startsWith('http:')) {
+                        showFallbackUI();
+                    }
+                }
+            }, 5000);
+        };
+        
+        // 同步目标网址的缓存控制
+        const syncCacheHeaders = (frame) => {
+            try {
+                const frameWindow = frame.contentWindow;
+                
+                // 重写fetch方法以确保缓存行为一致
+                const originalFetch = frameWindow.fetch;
+                frameWindow.fetch = function(input, init) {
+                    // 确保所有请求都包含时间戳参数以避免缓存
+                    if (typeof input === 'string') {
+                        input = input + (input.includes('?') ? '&' : '?') + 't=' + Date.now();
+                    }
+                    return originalFetch.call(this, input, init);
+                };
+                
+                // 重写XMLHttpRequest以确保缓存行为一致
+                const originalXHROpen = frameWindow.XMLHttpRequest.prototype.open;
+                frameWindow.XMLHttpRequest.prototype.open = function(method, url) {
+                    // 确保所有XHR请求都包含时间戳参数以避免缓存
+                    url = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+                    return originalXHROpen.apply(this, arguments);
+                };
+                
+            } catch (e) {
+                console.log('Cannot sync cache headers due to cross-origin restrictions');
+            }
+        };
+        
+        // 页面初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            loadContent();
+            
+            // 微信环境下添加提示
+            if (isWeChat()) {
+                setTimeout(() => {
+                    alert('如需最佳体验，请点击右上角菜单选择"在浏览器中打开"');
+                }, 3000);
+            }
+        });
+    </script>
+
+    <!-- 悬浮水印样式 -->
+<style>
+    .watermark {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%) rotate(-30deg);
+        font-size: 24px;
+        color: rgba(0, 0, 0, 0.08);
+        pointer-events: none;
+        user-select: none;
+        z-index: 9999;
+        white-space: nowrap;
+    }
+
+    /* 多个水印分布 */
+    .watermark-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        z-index: 9999;
+        overflow: hidden;
+    }
+
+    .watermark-text {
+        position: absolute;
+        font-size: 18px;
+        color: rgba(0, 0, 0, 0.06);
+        transform: rotate(-30deg);
+        white-space: nowrap;
+    }
+</style>
+
+<!-- 水印容器 -->
+<div class="watermark-container" id="watermark-container"></div>
+
+<script>
+    // 动态生成多个水印
+    function generateWatermarks(text) {
+        const container = document.getElementById('watermark-container');
+        const cols = 6;
+        const rows = 6;
+        const offsetX = window.innerWidth / cols;
+        const offsetY = window.innerHeight / rows;
+
+        for (let i = 0; i < cols; i++) {
+            for (let j = 0; j < rows; j++) {
+                const mark = document.createElement('div');
+                mark.className = 'watermark-text';
+                mark.innerText = text;
+                mark.style.left = `${i * offsetX}px`;
+                mark.style.top = `${j * offsetY}px`;
+                container.appendChild(mark);
+            }
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        generateWatermarks('演示系统，去除请联系V:RS12900');
+    });
+</script>
+
+</body>
+</html>
